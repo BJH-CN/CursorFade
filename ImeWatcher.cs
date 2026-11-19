@@ -295,6 +295,109 @@ internal static class ImeWatcher
         return interW * interH * 10 >= monArea * 9;
     }
 
+    /// <summary>
+    /// 系统 Tooltip（工具提示/悬浮提示）检测。
+    /// Windows 标准 tooltip 使用专属类名 tooltips_class32（与右键菜单/下拉的 #32768
+    /// 天然不同类，不会误伤菜单），且 tooltip 仅在鼠标悬停时显示、必然紧贴指针、
+    /// 鼠标移开即消失——因此"检出=正在遮挡"，无需打字/文本光标等上下文门。
+    /// 仅覆盖原生窗口程序；Chromium/Electron 系（Trae/Chrome/VSCode）的 tooltip 为
+    /// 页面内 DOM 绘制、无独立窗口，检测不到（已知边界）。
+    /// </summary>
+    public static string? TooltipPresent()
+    {
+        string? found = null;
+        string? nearOther = null;
+        int bestDist = int.MaxValue;
+        var box = CursorBox();
+
+        Native.EnumWindows((hwnd, _) =>
+        {
+            if (!Native.IsWindowVisible(hwnd)) return true;
+            var cls = ClassNameOf(hwnd);
+            Native.GetWindowRect(hwnd, out var r);
+            int w = r.Right - r.Left, h = r.Bottom - r.Top;
+            if (w < 8 || w > 700 || h < 8 || h > 240) return true;   // 尺寸门：tooltip 恒为小窗
+            int dist = Intersects(r, box) ? 0 : RectDistance(r, box);
+            if (dist > 64) return true;                                // 紧贴指针才算
+
+            Native.GetWindowThreadProcessId(hwnd, out uint pid);
+            var sb = new System.Text.StringBuilder(256);
+            Native.GetWindowTextW(hwnd, sb, sb.Capacity);
+            string title = sb.ToString();
+
+            if (IsTooltipClass(cls, title) || IsTooltipLike(hwnd))
+            {
+                found = $"{cls}|{GetProcessName(pid)}|{r.Left},{r.Top} {w}x{h}|tooltip";
+                return false;
+            }
+            // 取证：指针旁的其他可见小窗（非标准 tooltip）——记录类名/进程/标题，
+            // 用于适配 Qt(WinUI/微信/Navicat 等)自绘 tooltip 的真实实现
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                nearOther = $"{cls}|{GetProcessName(pid)}|{r.Left},{r.Top} {w}x{h}|\"{sb}\"|d={dist}";
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        if (found == null && nearOther != null && CursorStill(400))
+        {
+            if (Environment.TickCount64 - _lastSmallWinLogTick > 2000)
+            {
+                _lastSmallWinLogTick = Environment.TickCount64;
+                Log.Write($"[指针旁小窗]{nearOther}");
+            }
+        }
+        return found;
+    }
+
+    private static long _lastSmallWinLogTick;
+
+    /// <summary>
+    /// tooltip 窗口类名判定——按"语义模式"泛化，而非逐程序白名单：
+    /// - tooltips_class32：Win32 标准（桌面图标/资源管理器等）
+    /// - 含 HintWindow：整个 Delphi/VCL 生态（THintWindow/TCustomHintWindow/TVirtualTreeHintWindow…）
+    /// - 含 QWindowToolTip：整个 Qt 生态（类名带 Qt 版本号，任何版本通用）
+    /// - Win11 托盘提示：同类名窗口多，用取证到的固定标题精确限定
+    /// 未覆盖的走 IsTooltipLike 结构兜底 + UIA 泛用路径。
+    /// </summary>
+    private static bool IsTooltipClass(string cls, string title)
+    {
+        if (cls.Equals("tooltips_class32", StringComparison.OrdinalIgnoreCase)) return true;
+        if (cls.Contains("HintWindow", StringComparison.OrdinalIgnoreCase)) return true;
+        if (cls.Contains("QWindowToolTip", StringComparison.OrdinalIgnoreCase)) return true;
+        if (cls.Equals("Xaml_WindowedPopupClass", StringComparison.OrdinalIgnoreCase) &&
+            title.Equals("主机弹出窗口", StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// 不看类名的泛用结构兜底：tooltip 的本质特征 = 贴指针的小型弹出 + 工具窗/置顶 +
+    /// 不抢输入焦点 + 鼠标悬停静止。满足即视为 tooltip，未知自绘实现同样命中。
+    /// </summary>
+    private static bool IsTooltipLike(IntPtr hwnd)
+    {
+        long ex = Native.GetWindowLongPtr(hwnd, Native.GWL_EXSTYLE).ToInt64();
+        if ((ex & (Native.WS_EX_TOOLWINDOW | Native.WS_EX_TOPMOST)) == 0) return false;
+        if (hwnd == Native.GetForegroundWindow()) return false;   // tooltip 永不抢焦点；被拖动/激活的窗除外
+        return CursorStill(500);                                   // 悬停特征：挡住鼠标扫过的瞬时小窗
+    }
+    private static int _stillX = int.MinValue, _stillY;
+    private static long _stillSinceTick;
+
+    /// <summary>光标静止超过 ms 毫秒（tooltip 悬停出现的前提特征，也用于压制取证噪音）。</summary>
+    private static bool CursorStill(int ms)
+    {
+        Native.GetCursorPos(out var pt);
+        long now = Environment.TickCount64;
+        if (pt.X != _stillX || pt.Y != _stillY)
+        {
+            _stillX = pt.X; _stillY = pt.Y; _stillSinceTick = now;
+            return false;
+        }
+        return now - _stillSinceTick >= ms;
+    }
+
     private static bool Intersects(Native.RECT a, Native.RECT b)
         => a.Left <= b.Right && a.Right >= b.Left && a.Top <= b.Bottom && a.Bottom >= b.Top;
 

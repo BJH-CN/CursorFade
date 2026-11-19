@@ -40,6 +40,7 @@ internal sealed class TrayContext : ApplicationContext
     public TrayContext()
     {
         _config = AppConfig.Load();
+        UiaTooltipProbe.Start();   // UIA 泛用 tooltip 探测（独立 STA 后台线程，低频查询）
         foreach (var cls in _config.LearnedClasses) ImeWatcher.LearnedClasses.Add(cls);
 
         // 上次异常退出可能留下淡化状态，启动时先用注册表原图自愈
@@ -219,6 +220,19 @@ internal sealed class TrayContext : ApplicationContext
                 else if (_skipLearnLogged.Add(learntClass))
                 {
                     Log.Write($"跳过通用类名（不学习）: {learntClass}");
+                }
+            }
+
+            // 悬停提示(Tooltip)：窗口路线（类名语义模式 + 结构兜底）+ UIA 泛用路线
+            //（覆盖 DOM 无窗 tooltip）。检出即视为正在遮挡，与输入法同一条淡化管线
+            if (!hit && _config.TooltipFade)
+            {
+                var tip = ImeWatcher.TooltipPresent();
+                if (tip == null) tip = UiaTooltipProbe.RecentEvidence();
+                if (tip != null)
+                {
+                    hit = true;
+                    evidence = tip;
                 }
             }
 
@@ -457,6 +471,19 @@ internal sealed class TrayContext : ApplicationContext
             _config.Save();
         };
         menu.Items.Add(textField);
+
+        // 悬停提示(Tooltip)出现时淡出：独立开关（窗口语义模式/结构兜底 + UIA 泛用路线）
+        var tooltipFade = new ToolStripMenuItem("悬停提示(Tooltip)出现时淡出")
+        {
+            Checked = _config.TooltipFade,
+            CheckOnClick = true
+        };
+        tooltipFade.CheckedChanged += (_, _) =>
+        {
+            _config.TooltipFade = tooltipFade.Checked;
+            _config.Save();
+        };
+        menu.Items.Add(tooltipFade);
 
         // 例外：临时（目标程序退出即失效）与永久（写入配置，重启仍生效）
         var sessionMenu = BuildExcludeMenu("临时例外（退出该程序即恢复）", session: true);

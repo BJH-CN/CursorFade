@@ -8,6 +8,8 @@ internal sealed class AppConfig
     public bool Enabled { get; set; } = true;
     public int Opacity { get; set; } = 30;
     public bool TextFieldFade { get; set; } = true;
+    /// <summary>悬停提示(Tooltip)出现时淡出（含窗口结构路径与 UIA 泛用路径）。</summary>
+    public bool TooltipFade { get; set; } = true;
     public bool FadeTransition { get; set; }
     public List<string> LearnedClasses { get; set; } = new();
     public List<string> ExcludeApps { get; set; } = new();
